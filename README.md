@@ -1,12 +1,12 @@
 
-# 🎯 Shooting Arena
+#  Shooting Arena
 
 A Python + OpenGL training ground FPS-style game built with **PyOpenGL** and **GLUT**.  
 This project simulates a small practice arena where you can move, shoot, throw grenades/smokes, and fight against AI enemies.
 
 ---
 
-## 🚀 Features
+##  Features
 - **Player movement**: WASD for walking, jumping with C, and camera control with arrow keys.  
 - **Weapons**:  
   - **AK-47** (single, burst, auto modes)  
@@ -29,7 +29,7 @@ This project simulates a small practice arena where you can move, shoot, throw g
 
 ---
 
-## 🎮 Controls
+##  Controls
 ```
 Look: Arrow Keys        Move: W / A / S / D
 Fire: SPACE             Scope / Firemode: F
@@ -54,7 +54,7 @@ pip install PyOpenGL PyOpenGL_accelerate
 
 ---
 
-## ▶️ How to Run
+##  How to Run
 ```bash
 python Shooting-Arena.py
 ```
@@ -64,15 +64,15 @@ Fight enemies, practice aim, and survive as long as possible.
 
 ---
 
-## 📊 Gameplay Notes
+##  Gameplay Notes
 - **Headshots**: Instant kill, every 2 headshots restore +10 HP (if below 100).  
 - **Body shots**: Reduce enemy HP, kill after multiple hits.  
 - **Grenades**: Explode after ~2 seconds or 3 bounces.  
 - **Smoke**: Blocks vision and bullets passing through its radius.  
-- **Enemy AI**: Enemies dodge, avoid arena edges, and fire back after player kills 10+ enemies.  
+- **Enemy AI**: Enemies dodge, avoid arena edges, and fire back after the player kills 10+ enemies.  
 
 ---
 
-## 📝 Credits
-Developed by **Ohi**  
+##  Credits
+Developed by **Ohi & his team**  
 Built for practice and experimentation with **Python OpenGL**.
