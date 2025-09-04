@@ -1,13 +1,21 @@
-# range_final_weapons_ak_awp.py
+# Controls:
+#   Look: Arrow Keys    Move: W/A/S/D
+#   Fire: SPACE         Scope/Firemode: F
+#   Jump: C             Map: Z
+#   Cheat (x-ray): X    Swap AK/AWP: V
+#   Frag: G             Smoke: T
+#   End: Q              Menu: Esc (Enter to select)
+
 from OpenGL.GL import *
 from OpenGL.GLU import *
 from OpenGL.GLUT import *
-import time, math, sys, os, random
+import time, math, random, sys, os
 
 # ---------------- Window / Camera ----------------
 win_w, win_h = 1280, 900
 aspect = win_w / float(win_h)
 FOVY_NORM, FOVY_ZOOM = 95.0, 38.0
+
 zoomed = False
 scope_on = False
 
@@ -24,13 +32,15 @@ JUMP_V0 = 420.0
 GRAVITY_PLAYER = -980.0
 GROUND_EPS = 0.01
 
-# input state
+# input state (no key-up callback; emulate release by timeout)
 key_W = key_S = key_A = key_D = False
-mouse_left_down = False
+fire_hold = False
+_key_last_time = {"w":0.0,"a":0.0,"s":0.0,"d":0.0,"space":0.0}
+_key_hold_window = 0.15
 
 # overlays
 map_overlay = False
-crosshair_on = True  # default for AK; we switch when swapping weapons
+crosshair_on = True  # AK default
 
 # time / session
 play_time = 0.0
@@ -38,7 +48,6 @@ session_over = False
 session_reason = "Quit"
 menu_active = False
 menu_choice = 0
-menu_click_zones = []
 
 # ---------------- World ----------------
 grid_l, WALL_H = 1400, 170.0
@@ -63,17 +72,17 @@ def all_obstacles():
 
 # ---------------- Enemies ----------------
 NUM_ENEMIES = 5
-enemies = []   # {x,y,z,hp,next_shot,unstick}
+enemies = []   # dicts: {x,y,z,hp,next_shot}
 HEAD_R = 14.0
 BODY_W, BODY_H, BODY_D = 28.0, 50.0, 18.0
 LEG_H = 20.0
 ENEMY_RADIUS = 22.0
-ENEMY_SPEED = 145.0  # slight boost
+ENEMY_SPEED = 145.0
 
-E_BULLETS = []      # enemy bullets
+E_BULLETS = []
 E_B_SPD   = 800.0
 player_hp = 100
-hs_for_heal = 0  # every 2 headshots while hurt => +10 HP
+hs_for_heal = 0
 
 # ---------------- Player bullets ----------------
 bullets = []
@@ -93,7 +102,7 @@ ak_burst_left = 0
 # ---------------- Grenades / Smoke ----------------
 GRAVITY = -900.0
 grenades  = []
-explosions= []
+explosions= []  # visual rings (polyline)
 
 SMOKES = []
 SMOKE_EMIT_TIME   = 6.0
@@ -116,7 +125,6 @@ FRAG_FUSE, FRAG_RADIUS = 2.0, 150.0
 
 # ---------------- Stats / Feed ----------------
 headshots = bodykills = grenade_kills = shots_fired = missed_shots = wallbang_kills = 0
-kill_feed = []
 
 # ---------------- Cheats ----------------
 xray = False
@@ -159,6 +167,34 @@ def has_line_of_sight(px,py, ex,ey, step=18.0):
         t+=step
     return True
 
+# ---- painter helpers (still template-safe)
+def view_forward():
+    y = math.radians(Pangle); p = math.radians(Pitch)
+    return (math.cos(y)*math.cos(p), math.sin(y)*math.cos(p), math.sin(p))
+
+def depth_to_cam(x, y, z):
+    fx, fy, fz = view_forward()
+    return (x - Px)*fx + (y - Py)*fy + (z - (Pz + EYE_HEIGHT))*fz
+
+def box_nearest_depth(cx, cy, sx, sy, h):
+    fx, fy, fz = view_forward()
+    ez = Pz + EYE_HEIGHT
+    mins = 1e9
+    for dx in (-sx, sx):
+        for dy in (-sy, sy):
+            for dz in (0.0, h):
+                d = (cx+dx - Px)*fx + (cy+dy - Py)*fy + (dz - ez)*fz
+                if d < mins: mins = d
+    return mins
+
+def enemy_nearest_depth(e):
+    dz = [e["z"], e["z"] + LEG_H + BODY_H + HEAD_R*2]
+    return min(depth_to_cam(e["x"], e["y"], z) for z in dz)
+
+def draw_box_single(cx, cy, sx, sy, h, color):
+    glColor3f(*color)
+    glPushMatrix(); glTranslatef(cx, cy, h*0.5); glScalef(sx*2, sy*2, h); glutSolidCube(1.0); glPopMatrix()
+
 # ---------------- Camera ----------------
 def setupCamera():
     glMatrixMode(GL_PROJECTION); glLoadIdentity()
@@ -198,9 +234,13 @@ def draw_ak():
     side,drop,forward=14.0,10.0,20.0
     bx=ex+rx*side+fx*forward; by=ey+ry*side+fy*forward; bz=ez-drop+fz*2.0
     glPushMatrix(); glTranslatef(bx,by,bz); glRotatef(Pangle,0,0,1); glRotatef(-Pitch,0,1,0)
-    # stock (orange), body (dark), barrel
-    glColor3f(0.95,0.55,0.12); glPushMatrix(); glTranslatef(-10,0,0); glScalef(22,10,10); glutSolidCube(1.0); glPopMatrix()
-    glColor3f(0.12,0.12,0.12); glPushMatrix(); glScalef(30,10,12); glutSolidCube(1.0); glPopMatrix()
+    # ORANGE BODY (receiver/handguard/mag block)
+    glColor3f(0.95,0.55,0.12); glPushMatrix(); glScalef(34,10,12); glutSolidCube(1.0); glPopMatrix()
+    # black top cover attachment
+    glColor3f(0.10,0.10,0.10); glPushMatrix(); glTranslatef(0,0,5); glScalef(24,6,4); glutSolidCube(1.0); glPopMatrix()
+    # black pistol grip
+    glColor3f(0.10,0.10,0.10); glPushMatrix(); glTranslatef(-10,-0, -6); glScalef(6,4,8); glutSolidCube(1.0); glPopMatrix()
+    # gray barrel/muzzle
     glColor3f(0.65,0.65,0.65); glPushMatrix(); glTranslatef(16,0,2); glRotatef(90,0,1,0)
     gluCylinder(gluNewQuadric(),2.2,2.0,34,10,1); glPopMatrix()
     glPopMatrix()
@@ -228,7 +268,6 @@ def draw_enemy(e, color=(0.0,0.6,0.0)):
     glColor3f(*color)
     glPushMatrix(); glTranslatef(0,0,LEG_H+BODY_H*0.5); glScalef(BODY_W,BODY_D,BODY_H); glutSolidCube(1.0); glPopMatrix()
     glColor3f(0,0,0); glPushMatrix(); glTranslatef(0,0,LEG_H+BODY_H+HEAD_R); gluSphere(gluNewQuadric(),HEAD_R,12,12); glPopMatrix()
-    # simple rifle on right chest
     glColor3f(0.3,0.3,0.3); glPushMatrix(); glTranslatef(BODY_W*0.45,0,LEG_H+BODY_H*0.7); glRotatef(90,0,1,0)
     gluCylinder(gluNewQuadric(),3,2.5,25,12,1); glPopMatrix()
     glPopMatrix()
@@ -236,43 +275,54 @@ def draw_enemy(e, color=(0.0,0.6,0.0)):
 def spawn_enemy():
     while True:
         x=random.randint(-grid_l+100,grid_l-100); y=random.randint(-grid_l+100,grid_l-100)
-        if not point_in_obstacle(x,y): return {"x":float(x),"y":float(y),"z":0.0,"hp":2,"next_shot":time.time()+9999,"unstick":0.0}
+        if not point_in_obstacle(x,y): return {"x":float(x),"y":float(y),"z":0.0,"hp":2,"next_shot":time.time()+9999}
 
 def reset_enemies():
     global enemies; enemies=[spawn_enemy() for _ in range(NUM_ENEMIES)]
 
 def update_enemies(dt):
+    # enemies dodge player and strongly avoid boundaries
     prx,pry=right_vec_from_yaw(Pangle)
     for e in enemies:
-        # flee + sidestep logic
         toE_x,toE_y=e["x"]-Px,e["y"]-Py
         s = 1.0 if (prx*toE_x + pry*toE_y) < 0.0 else -1.0
         awayx,awayy=norm2(toE_x,toE_y)
         sidex,sidey=prx*s,pry*s
-        desx,desy=norm2(awayx*0.7+sidex*0.3, awayy*0.7+sidey*0.3)
+
+        # edge avoidance force (push back when near borders)
+        marginX = grid_l - abs(e["x"])
+        marginY = grid_l - abs(e["y"])
+        pushx = 0.0
+        pushy = 0.0
+        if marginX < 220:
+            pushx = -math.copysign((220 - marginX)/220.0, e["x"])
+        if marginY < 220:
+            pushy = -math.copysign((220 - marginY)/220.0, e["y"])
+
+        desx,desy=awayx*0.65+sidex*0.35 + pushx*1.2, awayy*0.65+sidey*0.35 + pushy*1.2
+        dlen=math.hypot(desx,desy)
+        if dlen>0: desx,desy=desx/dlen,desy/dlen
+
         base=ENEMY_SPEED; yaw=math.degrees(math.atan2(desy,desx))
         best=None
-        for off in (0,+40,-40,+80,-80,+120,-120,+160,-160,+180):
+        for off in (0,+30,-30,+60,-60,+90,-90,+150,-150,+180):
             a=math.radians(yaw+off); dirx,diry=math.cos(a),math.sin(a)
             step=base*dt; nx,ny=e["x"]+dirx*step, e["y"]+diry*step
             if enemy_blocked(nx,ny): continue
-            # prefer inward if near boundary
-            margin = grid_l - max(abs(nx),abs(ny))
-            score=(1.0 if margin<120 else 0.0) + random.random()*0.25
+            margin = min(grid_l-abs(nx), grid_l-abs(ny))
+            score=margin + random.random()*0.3  # prefer safer-from-edge spots
             if (best is None) or (score>best[0]): best=(score,nx,ny)
         if best:
             e["x"],e["y"]=best[1],best[2]
-        # bounce/repel from borders
-        repel = 40.0*dt
-        if e["x"]>grid_l-ENEMY_RADIUS-1: e["x"]-=repel
-        if e["x"]<-grid_l+ENEMY_RADIUS+1: e["x"]+=repel
-        if e["y"]>grid_l-ENEMY_RADIUS-1: e["y"]-=repel
-        if e["y"]<-grid_l+ENEMY_RADIUS+1: e["y"]+=repel
+
+        # hard clamp just in case
+        e["x"]=clamp(e["x"], -grid_l+ENEMY_RADIUS, grid_l-ENEMY_RADIUS)
+        e["y"]=clamp(e["y"], -grid_l+ENEMY_RADIUS, grid_l-ENEMY_RADIUS)
 
 # enemy fire (starts at 10 kills)
 def enemy_try_fire(now):
     total_kills=headshots+bodykills+grenade_kills
-    if total_kills < 10 or map_overlay:   # unlock threshold
+    if total_kills < 10 or map_overlay:
         return
     head_z = Pz + EYE_HEIGHT
     for e in enemies:
@@ -281,11 +331,9 @@ def enemy_try_fire(now):
         if now < e["next_shot"]: continue
         if not has_line_of_sight(e["x"],e["y"], Px,Py):
             e["next_shot"] = now + 0.6; continue
-        # Fire from a muzzle offset pointing toward player
         tx,ty,tz = Px,Py,(head_z if random.random()<0.5 else Pz+BODY_H*0.6)
         dx,dy = tx-e["x"], ty-e["y"]; dist=max(1e-6, math.hypot(dx,dy))
         ux,uy = dx/dist, dy/dist
-        # right-hand offset
         rx,ry = -uy, ux
         origin_x = e["x"] + ux*18.0 + rx*6.0
         origin_y = e["y"] + uy*18.0 + ry*6.0
@@ -306,7 +354,7 @@ def step_enemy_bullets(dt):
         nx=b["x"]+b["vx"]*dt; ny=b["y"]+b["vy"]*dt; nz=b["z"]+b["vz"]*dt
         if abs(nx)>grid_l or abs(ny)>grid_l or point_in_obstacle(nx,ny):
             continue
-        # smoke blocks enemy bullets
+        # smoke blocks
         blocked_by_smoke=False
         for s in SMOKES:
             for p in s["puffs"]:
@@ -325,21 +373,14 @@ def step_enemy_bullets(dt):
             end_session("Killed by Enemies")
     E_BULLETS[:] = alive
 
-def draw_enemy_bullets():
-    if menu_active or map_overlay: return
-    glColor3f(1.0,0.25,0.25)
-    for b in E_BULLETS:
-        glPushMatrix(); glTranslatef(b["x"],b["y"],b["z"]); glutSolidCube(8.0); glPopMatrix()
+# ---------------- Logging ----------------
+def log_shot(label): print(f"[SHOT] {label}")
+def log_kill(label): print(f"[KILL] {label}")
 
 # ---------------- Player bullets & firing ----------------
-def _push_killfeed(txt):
-    kill_feed.append((txt, time.time()))
-    if len(kill_feed)>4: kill_feed.pop(0)
-
 def player_fire_common(now, speed):
     global shots_fired
     shots_fired += 1
-    print(f"[SHOT] #{shots_fired} ({weapon})")
     mx,my,mz=muzzle_world_pos()
     fx=math.cos(math.radians(Pangle))*math.cos(math.radians(Pitch))
     fy=math.sin(math.radians(Pangle))*math.cos(math.radians(Pitch))
@@ -350,11 +391,12 @@ def fire_awp(now):
     global _last_shot
     if now-_last_shot<AWP_CD: return
     _last_shot=now
+    log_shot("AWP")
     player_fire_common(now, AWP_SPEED)
 
 def apply_ak_recoil():
     global Pitch, Pangle
-    Pitch = clamp(Pitch - 0.9, -60, 60)   # kick up
+    Pitch = clamp(Pitch - 0.9, -60, 60)
     Pangle = (Pangle + random.uniform(-0.6,0.6)) % 360
 
 def fire_ak(now):
@@ -362,21 +404,24 @@ def fire_ak(now):
     if ak_mode=="single":
         if now<ak_next_fire: return
         ak_next_fire = now + AK_CD_SINGLE
+        log_shot("AK single")
         player_fire_common(now, AK_SPEED); apply_ak_recoil()
     elif ak_mode=="burst":
         if now<ak_next_fire: return
         ak_next_fire = now + AK_CD_SINGLE*1.5
-        ak_burst_left = 2  # we fire once now and queue 2 more
+        ak_burst_left = 2
+        log_shot("AK burst (1/3)")
         player_fire_common(now, AK_SPEED); apply_ak_recoil()
     elif ak_mode=="auto":
         if now<ak_next_fire: return
         ak_next_fire = now + AK_CD_AUTO
+        log_shot("AK auto")
         player_fire_common(now, AK_SPEED); apply_ak_recoil()
 
 def step_ak_burst(now):
     global ak_burst_left, ak_next_fire
     if ak_burst_left>0 and now>=ak_next_fire-AK_CD_SINGLE*1.5 + AK_BURST_SPACING*(3-ak_burst_left):
-        # schedule spaced burst (poor-man's timer)
+        log_shot(f"AK burst ({3-ak_burst_left+1}/3)")
         player_fire_common(now, AK_SPEED); apply_ak_recoil()
         ak_burst_left -= 1
 
@@ -387,8 +432,10 @@ def step_bullets(dt,now):
         nx=b["x"]+b["vx"]*dt; ny=b["y"]+b["vy"]*dt; nz=b["z"]+b["vz"]*dt
         expired = (now-b["born"])>B_LIFE or abs(nx)>grid_l or abs(ny)>grid_l
         if expired and not b["hit"]:
-            missed_shots+=1; print("[MISS] total=", missed_shots); continue
-        elif expired: continue
+            missed_shots+=1
+            continue
+        elif expired:
+            continue
         hit=False
         for e in list(enemies):
             hx,hy,hz=e["x"],e["y"],e["z"]+LEG_H+BODY_H+HEAD_R
@@ -396,31 +443,22 @@ def step_bullets(dt,now):
             if (nx-hx)**2+(ny-hy)**2<=HEAD_R**2 and abs(nz-hz)<=HEAD_R:
                 e["hp"]=0; headshots+=1; hs_for_heal+=1; hit=True; b["hit"]=True
                 if player_hp<100 and hs_for_heal>=2:
-                    player_hp = min(100, player_hp+10); hs_for_heal-=2; print("[HEAL] +10 HP ->", player_hp)
+                    player_hp = min(100, player_hp+10); hs_for_heal-=2
                 if wb: wallbang_kills+=1
-                txt = "WALLBANG HEADSHOT" if wb else "HEADSHOT"
-                print("[KILL]", txt); _push_killfeed(txt)
+                log_kill("WALLBANG HEADSHOT" if wb else "HEADSHOT")
             elif (nx-e["x"])**2+(ny-e["y"])**2<=ENEMY_RADIUS**2 and e["z"]<=nz<=e["z"]+LEG_H+BODY_H:
                 e["hp"]-=1; hit=True
                 if e["hp"]<=0:
                     bodykills+=1
                     if wb: wallbang_kills+=1
-                    txt = "WALLBANG BODY" if wb else "BODY"
-                    print("[KILL]", txt); _push_killfeed(txt)
+                    log_kill("WALLBANG BODY" if wb else "BODY")
             if e["hp"]<=0:
                 enemies.remove(e); enemies.append(spawn_enemy())
         if hit: continue
         b["x"],b["y"],b["z"]=nx,ny,nz; alive.append(b)
     bullets[:]=alive
 
-def draw_bullets():
-    if menu_active or map_overlay: return
-    glColor3f(0.95,0.85,0.10)
-    for b in bullets:
-        glPushMatrix(); glTranslatef(b["x"],b["y"],b["z"]); glutSolidCube(B_SIZE); glPopMatrix()
-
-# ---------------- Grenades / Smoke ----------------
-SMOKES = SMOKES
+# ---------------- Grenades / Smoke (opaque puffs; no blending) ----------------
 def throw_grenade(type_):
     mx,my,mz=muzzle_world_pos()
     fx=math.cos(math.radians(Pangle))*math.cos(math.radians(Pitch))
@@ -432,15 +470,12 @@ def throw_grenade(type_):
 
 def _process_frag_explosion(x,y,z, now):
     global enemies, grenade_kills
-    killed = 0
     for e in list(enemies):
         dx,dy = e["x"]-x, e["y"]-y
         if dx*dx + dy*dy <= FRAG_RADIUS*FRAG_RADIUS:
             enemies.remove(e); enemies.append(spawn_enemy())
-            grenade_kills += 1; killed += 1
-            _push_killfeed("GRENADE"); print("[KILL] GRENADE")
-    if killed: print(f"[GRENADE] Blast kills: {killed}")
-    return killed
+            grenade_kills += 1
+            log_kill("GRENADE")
 
 def step_grenades(dt,now):
     alive=[]
@@ -480,20 +515,26 @@ def step_smokes(dt, now):
                 if abs(s["vz"])<20.0: s["vz"]=0.0
             if point_in_obstacle(s["x"],s["y"]):
                 s["vx"]*=-0.5; s["vy"]*=-0.5
+
+        # Emit puffs while active
         if now <= s["emit_end"]:
             for _ in range(SMOKE_BURST_RATE):
                 s["puffs"].append(Puff(s["x"]+random.uniform(-14,14),
                                        s["y"]+random.uniform(-14,14),
                                        s["z"]+10))
+
+        # Update puffs
         alive=[]
         for p in s["puffs"]:
             age = now - p.born
-            if age > SMOKE_PUFF_LIFE: continue
+            if age > SMOKE_PUFF_LIFE: 
+                continue
             p.x += p.vx*dt*0.45; p.y += p.vy*dt*0.45; p.z += p.vz*dt*0.45
             p.vx *= 0.985; p.vy *= 0.985; p.vz *= 0.985
             if p.z > 220.0: p.vz *= 0.6
             alive.append(p)
         s["puffs"] = alive
+
         if now > s["emit_end"] and not s["puffs"]:
             s["dead"]=True
         if not s["dead"]:
@@ -506,23 +547,30 @@ def draw_grenades_and_smoke(now):
             glPushMatrix(); glTranslatef(g["x"],g["y"],g["z"])
             glColor3f(0.3,0.3,0.3) if g["type"]=="frag" else glColor3f(0.6,0.6,0.6)
             glutSolidCube(16.0); glPopMatrix()
+        # explosion ring (polyline with GL_LINES)
         new_ex=[]
         for e in explosions:
             t = now - e["start"]
             if t <= 0.6:
                 r=40+t*240; glPushMatrix(); glTranslatef(e["x"],e["y"],e["z"]+10)
-                glColor3f(0.95,0.55,0.10); glutWireSphere(r,10,6); glPopMatrix()
+                glColor3f(0.95,0.55,0.10)
+                glBegin(GL_LINES)
+                lastx = None; lasty = None
+                for i in range(37):
+                    ang = 2*math.pi*i/36.0
+                    x = r*math.cos(ang); y = r*math.sin(ang)
+                    if lastx is not None:
+                        glVertex3f(lastx, lasty, 0); glVertex3f(x, y, 0)
+                    lastx, lasty = x, y
+                glEnd()
+                glPopMatrix()
                 new_ex.append(e)
         explosions[:] = new_ex
-    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-    glDisable(GL_DEPTH_TEST)
+    # smoke last (opaque puffs)
     for s in SMOKES:
         for p in s["puffs"]:
-            age = now - p.born; life_pct = clamp(age/SMOKE_PUFF_LIFE, 0.0, 1.0)
-            alpha = 0.65*(1.0-life_pct) + 0.15
-            glColor4f(0.82,0.82,0.82, alpha)
-            glPushMatrix(); glTranslatef(p.x,p.y,p.z); glutSolidSphere(SMOKE_PUFF_SIZE, 12, 10); glPopMatrix()
-    glEnable(GL_DEPTH_TEST); glDisable(GL_BLEND)
+            glColor3f(0.82,0.82,0.82)
+            glPushMatrix(); glTranslatef(p.x,p.y,p.z); gluSphere(gluNewQuadric(), SMOKE_PUFF_SIZE, 12, 10); glPopMatrix()
 
 # ---------------- HUD / Menus / Map ----------------
 def draw_floor():
@@ -532,136 +580,147 @@ def draw_floor():
             glColor3f(0.18,0.18,0.22) if ((x//step+y//step)&1)==0 else glColor3f(0.14,0.14,0.17)
             glBegin(GL_QUADS); glVertex3f(x,y,0); glVertex3f(x+step,y,0); glVertex3f(x+step,y+step,0); glVertex3f(x,y+step,0); glEnd()
 
-def draw_boxes(objs,color=(0.40,0.42,0.48)):
-    glColor3f(*color)
-    for (cx,cy,sx,sy,h) in objs:
-        glPushMatrix(); glTranslatef(cx,cy,h*0.5); glScalef(sx*2,sy*2,h); glutSolidCube(1.0); glPopMatrix()
-
 def draw_text(x,y,s,font=GLUT_BITMAP_HELVETICA_18):
-    glDisable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0,win_w,0,win_h)
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
     glColor3f(1,1,1); glRasterPos2f(x,y)
     for ch in s: glutBitmapCharacter(font, ord(ch))
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_DEPTH_TEST)
 
 def format_time(secs):
     m=int(secs//60); s=int(secs%60); return f"{m:02d}:{s:02d}"
 
 def draw_health_bar():
     if menu_active or map_overlay: return
-    glDisable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0,win_w,0,win_h)
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
-    # background 200px
     glColor3f(0.25,0.25,0.25); glBegin(GL_QUADS)
-    glVertex2f(12,28); glVertex2f(212,28); glVertex2f(212,48); glVertex2f(12,48); glEnd()
-    w = 2*player_hp  # 0..200
+    glVertex3f(12,28,0); glVertex3f(212,28,0); glVertex3f(212,48,0); glVertex3f(12,48,0); glEnd()
+    w = 2*player_hp
     glColor3f(0.15,0.8,0.2) if player_hp>35 else glColor3f(0.9,0.2,0.1)
-    glBegin(GL_QUADS); glVertex2f(12,28); glVertex2f(12+w,28); glVertex2f(12+w,48); glVertex2f(12,48); glEnd()
+    glBegin(GL_QUADS); glVertex3f(12,28,0); glVertex3f(12+w,28,0); glVertex3f(12+w,48,0); glVertex3f(12,48,0); glEnd()
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_DEPTH_TEST)
+    
 
 def draw_crosshair():
     if not crosshair_on or (weapon=="AWP" and scope_on) or menu_active or map_overlay: return
     cx,cy=win_w//2, win_h//2
-    glDisable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0,win_w,0,win_h)
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
     glColor3f(1,1,1); glBegin(GL_LINES)
-    glVertex2f(cx-10,cy); glVertex2f(cx-2,cy); glVertex2f(cx+2,cy); glVertex2f(cx+10,cy)
-    glVertex2f(cx,cy-10); glVertex2f(cx,cy-2); glVertex2f(cx,cy+2); glVertex2f(cx,cy+10)
-    glEnd(); glPointSize(4); glBegin(GL_POINTS); glVertex2f(cx,cy); glEnd()
+    glVertex3f(cx-10,cy,0); glVertex3f(cx-2,cy,0); glVertex3f(cx+2,cy,0); glVertex3f(cx+10,cy,0)
+    glVertex3f(cx,cy-10,0); glVertex3f(cx,cy-2,0); glVertex3f(cx,cy+2,0); glVertex3f(cx,cy+10,0)
+    glEnd(); glPointSize(4); glBegin(GL_POINTS); glVertex3f(cx,cy,0); glEnd()
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_DEPTH_TEST)
 
 def draw_scope_overlay():
     if weapon!="AWP" or not scope_on or menu_active or map_overlay: return
     cx,cy=win_w//2,win_h//2; r=int(min(win_w,win_h)*0.42)
-    glDisable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0,win_w,0,win_h)
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
     glColor3f(0,0,0)
-    glBegin(GL_QUADS); glVertex2f(0,0); glVertex2f(cx-r,0); glVertex2f(cx-r,win_h); glVertex2f(0,win_h); glEnd()
-    glBegin(GL_QUADS); glVertex2f(cx+r,0); glVertex2f(win_w,0); glVertex2f(win_w,win_h); glVertex2f(cx+r,win_h); glEnd()
-    glBegin(GL_QUADS); glVertex2f(cx-r,cy+r); glVertex2f(cx+r,cy+r); glVertex2f(cx+r,win_h); glVertex2f(cx-r,win_h); glEnd()
-    glBegin(GL_QUADS); glVertex2f(cx-r,0); glVertex2f(cx+r,0); glVertex2f(cx+r,cy-r); glVertex2f(cx-r,cy-r); glEnd()
-    glColor3f(0,0,0); glLineWidth(3); glBegin(GL_LINE_LOOP)
-    for i in range(120):
-        t=2*math.pi*i/120.0; glVertex2f(cx+r*math.cos(t), cy+r*math.sin(t))
+    # mask outside circle
+    glBegin(GL_QUADS); glVertex3f(0,0,0); glVertex3f(cx-r,0,0); glVertex3f(cx-r,win_h,0); glVertex3f(0,win_h,0); glEnd()
+    glBegin(GL_QUADS); glVertex3f(cx+r,0,0); glVertex3f(win_w,0,0); glVertex3f(win_w,win_h,0); glVertex3f(cx+r,win_h,0); glEnd()
+    glBegin(GL_QUADS); glVertex3f(cx-r,cy+r,0); glVertex3f(cx+r,cy+r,0); glVertex3f(cx+r,win_h,0); glVertex3f(cx-r,win_h,0); glEnd()
+    glBegin(GL_QUADS); glVertex3f(cx-r,0,0); glVertex3f(cx+r,0,0); glVertex3f(cx+r,cy-r,0); glVertex3f(cx-r,cy-r,0); glEnd()
+    # circular frame (GL_LINES polyline)
+    glColor3f(0,0,0); glBegin(GL_LINES)
+    lastx = None; lasty = None
+    for i in range(121):
+        t=2*math.pi*i/120.0
+        x = cx + r*math.cos(t); y = cy + r*math.sin(t)
+        if lastx is not None:
+            glVertex3f(lastx, lasty, 0); glVertex3f(x, y, 0)
+        lastx, lasty = x, y
     glEnd()
-    glLineWidth(2); glBegin(GL_LINES); glVertex2f(cx-r,cy); glVertex2f(cx+r,cy); glEnd()
-    glBegin(GL_LINES); glVertex2f(cx,cy-r); glVertex2f(cx,cy+r); glEnd()
-    glColor3f(1,0,0); glPointSize(5); glBegin(GL_POINTS); glVertex2f(cx,cy); glEnd()
+    glBegin(GL_LINES); glVertex3f(cx-r,cy,0); glVertex3f(cx+r,cy,0); glEnd()
+    glBegin(GL_LINES); glVertex3f(cx,cy-r,0); glVertex3f(cx,cy+r,0); glEnd()
+    glColor3f(1,0,0); glPointSize(5); glBegin(GL_POINTS); glVertex3f(cx,cy,0); glEnd()
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_DEPTH_TEST)
+
+def draw_full_map_overlay():
+    road=(0.76,0.64,0.48); walls=(0.28,0.30,0.34); border=(0.10,0.10,0.10)
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(-grid_l, grid_l, -grid_l, grid_l)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    glColor3f(*road); glBegin(GL_QUADS)
+    glVertex3f(-grid_l,-grid_l, 0); glVertex3f(grid_l,-grid_l, 0); glVertex3f(grid_l,grid_l, 0); glVertex3f(-grid_l,grid_l, 0); glEnd()
+    glColor3f(*walls)
+    for (cx,cy,sx,sy,h) in MAZE+CRATES:
+        glBegin(GL_QUADS); glVertex3f(cx-sx, cy-sy, 0); glVertex3f(cx+sx, cy-sy, 0); glVertex3f(cx+sx, cy+sy, 0); glVertex3f(cx-sx, cy+sy, 0); glEnd()
+    glColor3f(*border); glBegin(GL_LINES)
+    glVertex3f(-grid_l,-grid_l, 0); glVertex3f(grid_l,-grid_l, 0)
+    glVertex3f(grid_l,-grid_l, 0); glVertex3f(grid_l,grid_l, 0)
+    glVertex3f(grid_l,grid_l, 0); glVertex3f(-grid_l,grid_l, 0)
+    glVertex3f(-grid_l,grid_l, 0); glVertex3f(-grid_l,-grid_l, 0)
+    glEnd()
+    glPointSize(10.0); glColor3f(1.0,0.15,0.15); glBegin(GL_POINTS); glVertex3f(Px,Py, 0); glEnd()
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
 
 def draw_hud():
     if menu_active or map_overlay: return
     wep = f"{weapon} ({ak_mode})" if weapon=="AK" else "AWP"
     draw_text(10, win_h-20, f"{wep} | Kills:{headshots+bodykills+grenade_kills} (H:{headshots} B:{bodykills} N:{grenade_kills})  WB:{wallbang_kills}  Time:{format_time(play_time)}")
     draw_text(10, win_h-40, f"Shots:{shots_fired}  Missed:{missed_shots}")
-    draw_text(10, 10, "V:Swap  RMB:Scope/Mode  LMB:Fire  X:Map  Z:Zoom(AWP)  G:Frag  T:Smoke  E:Crosshair  C:Xray  Q:End  Esc:Menu")
-    draw_health_bar()
-
-def draw_full_map_overlay():
-    if not map_overlay or menu_active: return
-    road=(0.76,0.64,0.48); walls=(0.28,0.30,0.34); border=(0.10,0.10,0.10)
-    glDisable(GL_DEPTH_TEST)
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(-grid_l, grid_l, -grid_l, grid_l)
-    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
-    glColor3f(*road); glBegin(GL_QUADS)
-    glVertex2f(-grid_l,-grid_l); glVertex2f(grid_l,-grid_l); glVertex2f(grid_l,grid_l); glVertex2f(-grid_l,grid_l); glEnd()
-    glColor3f(*walls)
-    for (cx,cy,sx,sy,h) in MAZE+CRATES:
-        glBegin(GL_QUADS); glVertex2f(cx-sx, cy-sy); glVertex2f(cx+sx, cy-sy); glVertex2f(cx+sx, cy+sy); glVertex2f(cx-sx, cy+sy); glEnd()
-    glColor3f(*border); glLineWidth(3.0); glBegin(GL_LINE_LOOP)
-    glVertex2f(-grid_l,-grid_l); glVertex2f(grid_l,-grid_l); glVertex2f(grid_l,grid_l); glVertex2f(-grid_l,grid_l); glEnd()
-    glPointSize(10.0); glColor3f(1.0,0.15,0.15); glBegin(GL_POINTS); glVertex2f(Px,Py); glEnd()
-    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_DEPTH_TEST)
-
-# Menus
-def current_menu_items(): return ["Restart","Exit"] if session_over else ["Continue","End Session","Restart","Exit"]
-
-def draw_menu():
-    glDisable(GL_DEPTH_TEST)
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0,win_w,0,win_h)
-    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
-    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-    glColor4f(0,0,0,0.45); glBegin(GL_QUADS); glVertex2f(0,0); glVertex2f(win_w,0); glVertex2f(win_w,win_h); glVertex2f(0,win_h); glEnd()
-    glDisable(GL_BLEND)
-    title = "== TRAINING SESSION END ==" if session_over else "== GAME PAUSED =="
-    draw_text(win_w//2-160, win_h-90, title)
-    items=current_menu_items(); global menu_click_zones; menu_click_zones=[]
-    for i,item in enumerate(items):
-        prefix="> " if i==menu_choice else "  "; y=win_h-160-44*i
-        draw_text(win_w//2-80, y, prefix+item)
-        menu_click_zones.append((win_w//2-100, y-14, win_w//2+100, y+14, item))
-    if session_over:
-        draw_text(win_w//2-220, win_h//2,   f"Kills:{headshots+bodykills+grenade_kills} (H:{headshots} B:{bodykills} N:{grenade_kills})  WB:{wallbang_kills}")
-        draw_text(win_w//2-220, win_h//2-30,f"Shots:{shots_fired}  Miss:{missed_shots}  Time:{format_time(play_time)}")
-        draw_text(win_w//2-220, win_h//2-60,f"Reason: {session_reason}")
-    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_DEPTH_TEST)
+    draw_text(10, 10, "Arrows:Look  WASD:Move  SPACE:Fire  F:Scope/Mode  C:Jump  Z:Map  X:Xray  V:Swap  G/T:Frag/Smoke  Q:End  Esc:Menu")
 
 # ---------------- Display / Loop ----------------
 prev_time=None
 def display():
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-    glEnable(GL_DEPTH_TEST)
     setupCamera()
-    # world always behind overlays
-    draw_floor(); draw_boxes(MAZE,(0.40,0.42,0.48)); draw_boxes(CRATES,(0.32,0.34,0.40))
-    for e in enemies: draw_enemy(e)
-    if xray:
-        glDisable(GL_DEPTH_TEST)
-        for e in enemies: draw_enemy(e,(1.0,0.2,0.7))
-        glEnable(GL_DEPTH_TEST)
-    draw_bullets(); draw_enemy_bullets()
-    now=time.time(); draw_grenades_and_smoke(now)
-    draw_weapon(); draw_scope_overlay(); draw_crosshair(); draw_hud(); draw_full_map_overlay()
+    draw_floor()
+
+    items = []
+    maze_col  = (0.40, 0.42, 0.48)
+    crate_col = (0.32, 0.34, 0.40)
+
+    # boxes (nearest corner depth for robust painter sort)
+    for (cx, cy, sx, sy, h) in MAZE:
+        items.append(("box", (cx, cy, sx, sy, h, maze_col),
+                      box_nearest_depth(cx, cy, sx, sy, h)))
+    for (cx, cy, sx, sy, h) in CRATES:
+        items.append(("box", (cx, cy, sx, sy, h, crate_col),
+                      box_nearest_depth(cx, cy, sx, sy, h)))
+
+    # enemies & bullets
+    for e in enemies:
+        items.append(("enemy", e, enemy_nearest_depth(e)))
+    for b in bullets:
+        items.append(("pbullet", b, depth_to_cam(b["x"], b["y"], b["z"])))
+    for eb in E_BULLETS:
+        items.append(("ebullet", eb, depth_to_cam(eb["x"], eb["y"], eb["z"])))
+
+    # far -> near
+    items.sort(key=lambda t: t[2], reverse=True)
+
+    for kind, obj, _ in items:
+        if kind == "box":
+            cx, cy, sx, sy, h, col = obj
+            draw_box_single(cx, cy, sx, sy, h, col)
+        elif kind == "enemy":
+            draw_enemy(obj, (0.0, 0.6, 0.0))
+        elif kind == "pbullet":
+            glColor3f(0.95, 0.85, 0.10)
+            glPushMatrix(); glTranslatef(obj["x"], obj["y"], obj["z"])
+            glutSolidCube(B_SIZE); glPopMatrix()
+        elif kind == "ebullet":
+            glColor3f(1.0, 0.25, 0.25)
+            glPushMatrix(); glTranslatef(obj["x"], obj["y"], obj["z"])
+            glutSolidCube(8.0); glPopMatrix()
+
+    if xray and not menu_active and not map_overlay:
+        for e in enemies:
+            draw_enemy(e, (1.0, 0.2, 0.7))
+
+    now = time.time()
+    draw_grenades_and_smoke(now)
+    draw_weapon()
+    draw_scope_overlay()
+    draw_crosshair()
+    draw_health_bar()
+    draw_hud()
+    if map_overlay: draw_full_map_overlay()
     if menu_active: draw_menu()
     glutSwapBuffers()
 
@@ -671,7 +730,7 @@ def reshape(w,h):
     win_w,win_h=w,h; aspect=w/float(h); glViewport(0,0,w,h)
 
 def idle():
-    global prev_time, Px, Py, Pz, Pvz, play_time, ak_burst_left
+    global prev_time, Px, Py, Pz, Pvz, play_time, ak_burst_left, key_W, key_A, key_S, key_D, fire_hold
     now=time.time()
     if prev_time is None: prev_time=now
     dt=now-prev_time; prev_time=now
@@ -684,8 +743,15 @@ def idle():
     # jump physics
     Pvz += GRAVITY_PLAYER*dt; Pz += Pvz*dt
     if Pz <= GROUND_EPS:
-        Pz=0.0; 
+        Pz=0.0
         if Pvz<0: Pvz=0.0
+
+    # emulate key release timeout
+    if (now - _key_last_time["w"]) > _key_hold_window: key_W = False
+    if (now - _key_last_time["a"]) > _key_hold_window: key_A = False
+    if (now - _key_last_time["s"]) > _key_hold_window: key_S = False
+    if (now - _key_last_time["d"]) > _key_hold_window: key_D = False
+    if (now - _key_last_time["space"]) > _key_hold_window: fire_hold = False
 
     if not session_over and not map_overlay:
         fwdx=math.cos(math.radians(Pangle))*math.cos(math.radians(Pitch))
@@ -697,16 +763,20 @@ def idle():
         if key_S:
             nx,ny=Px-fwdx*step, Py-fwdy*step
             if not blocked(nx,ny): Px,Py=nx,ny
-        if key_A: globals()["Pangle"]=(Pangle+120*dt)%360
-        if key_D: globals()["Pangle"]=(Pangle-120*dt)%360
+        rx,ry = right_vec_from_yaw(Pangle)
+        if key_D:
+            nx,ny=Px-rx*step, Py-ry*step
+            if not blocked(nx,ny): Px,Py=nx,ny
+        if key_A:
+            nx,ny=Px+rx*step, Py+ry*step
+            if not blocked(nx,ny): Px,Py=nx,ny
 
         update_enemies(dt)
         step_bullets(dt,now)
         step_enemy_bullets(dt)
 
-        # weapon continuous logic
         if weapon=="AK":
-            if mouse_left_down: fire_ak(now)
+            if fire_hold: fire_ak(now)
             if ak_mode=="burst" and ak_burst_left>0:
                 step_ak_burst(now)
 
@@ -714,107 +784,125 @@ def idle():
     glutPostRedisplay()
 
 # ---------------- Input ----------------
-def keyDown(k,x,y):
-    global key_W,key_S,key_A,key_D, xray, zoomed, map_overlay, menu_active, menu_choice, crosshair_on, Pvz, weapon, ak_mode, scope_on
-    if k in (b'w',b'W'): key_W=True
-    elif k in (b's',b'S'): key_S=True
-    elif k in (b'a',b'A'): key_A=True
-    elif k in (b'd',b'D'): key_D=True
-    elif k in (b'c',b'C'): xray=not xray
-    elif k in (b'z',b'Z'): 
-        if weapon=="AWP": zoomed=not zoomed
-    elif k in (b'g',b'G'): throw_grenade("frag")
-    elif k in (b't',b'T'): throw_grenade("smoke")
-    elif k in (b'x',b'X'): map_overlay = not map_overlay
-    elif k in (b'e',b'E'): crosshair_on = not crosshair_on
-    elif k in (b'v',b'V'):
+def keyboardListener(k,x,y):
+    global key_W,key_S,key_A,key_D, xray, zoomed, map_overlay, menu_active, menu_choice, crosshair_on, Pvz, weapon, ak_mode, scope_on, fire_hold
+    now = time.time()
+    if k in (b'w',b'W'):
+        key_W=True; _key_last_time["w"]=now
+    elif k in (b's',b'S'):
+        key_S=True; _key_last_time["s"]=now
+    elif k in (b'a',b'A'):
+        key_A=True; _key_last_time["a"]=now
+    elif k in (b'd',b'D'):
+        key_D=True; _key_last_time["d"]=now
+
+    elif k in (b'c',b'C'):  # Jump
+        if Pz <= GROUND_EPS and Pvz == 0.0: Pvz = JUMP_V0
+
+    elif k in (b'x',b'X'):  # Cheat
+        xray = not xray
+
+    elif k in (b'z',b'Z'):  # Map overlay
+        map_overlay = not map_overlay
+
+    elif k in (b'v',b'V'):  # Swap weapon
         weapon = "AWP" if weapon=="AK" else "AK"
         scope_on=False; zoomed=False
-        # default crosshair behavior
         crosshair_on = (weapon=="AK")
         print("[WEAPON]", weapon)
-    elif k in (b' ',):     
-        if Pz <= GROUND_EPS and Pvz == 0.0: Pvz = JUMP_V0
-    elif k in (b'q',b'Q'): end_session("Quit")
-    elif k in (b'\x1b',):  # Esc
-        menu_active = not menu_active; menu_choice = 0
-    elif k in (b'\r', b'\n'):
-        if menu_active:
-            label = current_menu_items()[menu_choice]; menu_activate(label)
 
-def keyUp(k,x,y):
-    global key_W,key_S,key_A,key_D
-    if k in (b'w',b'W'): key_W=False
-    elif k in (b's',b'S'): key_S=False
-    elif k in (b'a',b'A'): key_A=False
-    elif k in (b'd',b'D'): key_D=False
-
-def special(k,x,y):
-    global menu_choice
-    if not menu_active: return
-    n=len(current_menu_items())
-    if k==GLUT_KEY_UP:   menu_choice=(menu_choice-1)%n
-    if k==GLUT_KEY_DOWN: menu_choice=(menu_choice+1)%n
-
-def mouse(btn,state,x,y):
-    global scope_on, mouse_left_down, ak_mode
-    if btn==GLUT_LEFT_BUTTON:
-        mouse_left_down = (state==GLUT_DOWN)
-        if state==GLUT_DOWN:
-            if weapon=="AWP": fire_awp(time.time())
-            # AK handled continuously in idle
-    elif btn==GLUT_RIGHT_BUTTON and state==GLUT_DOWN and not menu_active and not map_overlay:
+    elif k in (b'f',b'F'):  # Scope/Firemode
         if weapon=="AK":
             ak_mode = {"single":"burst","burst":"auto","auto":"single"}[ak_mode]
             print("[AK MODE]", ak_mode)
         else:
             scope_on = not scope_on
-    if state==GLUT_DOWN and menu_active:
-        yy = win_h - y
-        for (x0,y0,x1,y1,label) in menu_click_zones:
-            if x0<=x<=x1 and y0<=yy<=y1: menu_activate(label); break
+            zoomed = scope_on
 
-def mouseMotion(x,y):
-    global Pangle,Pitch
-    if menu_active or map_overlay: return
-    cx,cy=win_w//2,win_h//2
-    dx,dy=x-cx,y-cy
-    sens=0.2
-    Pangle=(Pangle - dx*sens) % 360
-    Pitch =clamp(Pitch - dy*sens, -60.0, 60.0)
-    glutWarpPointer(cx,cy)
+    elif k in (b' ',):      # Fire (Space)
+        _key_last_time["space"]=now
+        if weapon=="AWP":
+            fire_awp(now)
+        else:
+            fire_hold = True
+
+    elif k in (b'g',b'G'):
+        throw_grenade("frag")
+    elif k in (b't',b'T'):
+        throw_grenade("smoke")
+
+    elif k in (b'q',b'Q'):
+        end_session("Quit")
+
+    elif k in (b'\x1b',):  # Esc
+        menu_active = not menu_active; menu_choice = 0
+
+    elif k in (b'\r', b'\n'):
+        if menu_active:
+            label = (["Restart","Exit"] if session_over else ["Continue","End Session","Restart","Exit"])[menu_choice]
+            menu_activate(label)
+
+def specialKeyListener(key, x, y):
+    global Pangle, Pitch, menu_choice
+    if menu_active:
+        items = ["Restart","Exit"] if session_over else ["Continue","End Session","Restart","Exit"]
+        if key==GLUT_KEY_UP:
+            menu_choice=(menu_choice-1)%len(items)
+        elif key==GLUT_KEY_DOWN:
+            menu_choice=(menu_choice+1)%len(items)
+        return
+    # Arrow keys act as mouse-look
+    if key==GLUT_KEY_LEFT:   Pangle=(Pangle+3.0) % 360
+    elif key==GLUT_KEY_RIGHT: Pangle=(Pangle-3.0) % 360
+    elif key==GLUT_KEY_UP:    Pitch =clamp(Pitch+2.0, -60.0, 60.0)
+    elif key==GLUT_KEY_DOWN:  Pitch =clamp(Pitch-2.0, -60.0, 60.0)
+
+def mouseListener(button, state, x, y):
+    pass
 
 # ---------------- Menus / End / Exit ----------------
 def quit_game():
     print("[SESSION] Exit")
-    try: glutLeaveMainLoop()
-    except Exception: pass
-    try:
-        w=glutGetWindow()
-        if w: glutDestroyWindow(w)
-    except Exception: pass
     try: sys.exit(0)
     except SystemExit: pass
     os._exit(0)
 
+def current_menu_items(): return ["Restart","Exit"] if session_over else ["Continue","End Session","Restart","Exit"]
+
+def draw_menu():
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0,win_w,0,win_h)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    title = "== TRAINING SESSION END ==" if session_over else "== GAME PAUSED =="
+    draw_text(win_w//2-160, win_h-90, title)
+    items=current_menu_items()
+    for i,item in enumerate(items):
+        prefix="> " if i==menu_choice else "  "; y=win_h-160-44*i
+        draw_text(win_w//2-80, y, prefix+item)
+    if session_over:
+        draw_text(win_w//2-220, win_h//2,   f"Kills:{headshots+bodykills+grenade_kills} (H:{headshots} B:{bodykills} N:{grenade_kills})  WB:{wallbang_kills}")
+        draw_text(win_w//2-220, win_h//2-30,f"Shots:{shots_fired}  Miss:{missed_shots}  Time:{format_time(play_time)}")
+        draw_text(win_w//2-220, win_h//2-60,f"Reason: {session_reason}")
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
+
 def menu_activate(label):
     global menu_active, headshots, bodykills, shots_fired, missed_shots, wallbang_kills, grenade_kills
     global Px,Py,Pz,Pangle,Pitch, bullets, grenades, explosions, SMOKES
-    global zoomed, scope_on, xray, session_over, player_hp, E_BULLETS, kill_feed, Pvz, map_overlay, play_time
-    global weapon, ak_mode, hs_for_heal
+    global zoomed, scope_on, xray, session_over, player_hp, E_BULLETS, Pvz, map_overlay, play_time
+    global weapon, ak_mode, hs_for_heal, fire_hold
     if label=="Continue" and not session_over:
         menu_active=False
     elif label=="End Session" and not session_over:
         end_session("Ended from Menu")
     elif label=="Restart":
         headshots=bodykills=shots_fired=missed_shots=wallbang_kills=grenade_kills=0; hs_for_heal=0
-        bullets.clear(); grenades.clear(); explosions.clear(); SMOKES.clear(); E_BULLETS.clear(); kill_feed.clear()
+        bullets.clear(); grenades.clear(); explosions.clear(); SMOKES.clear(); E_BULLETS.clear()
         reset_enemies()
         Px,Py,Pz,Pangle,Pitch,Pvz = 0.0,-900.0,0.0,90.0,0.0,0.0
         zoomed=scope_on=xray=False
         session_over=False; menu_active=False; map_overlay=False
         player_hp=100; play_time=0.0
-        weapon="AK"; ak_mode="single"; print("[SESSION] Restarted")
+        weapon="AK"; ak_mode="single"; fire_hold=False
+        print("[SESSION] Restarted"); 
         crosshair_on=True
     elif label=="Exit":
         quit_game()
@@ -833,15 +921,13 @@ def end_session(reason):
 # ---------------- Main ----------------
 def main():
     random.seed(21); reset_enemies()
-    glutInit(); glutInitDisplayMode(GLUT_DOUBLE|GLUT_RGB|GLUT_DEPTH)
+    glutInit()
+    glutInitDisplayMode(GLUT_DOUBLE|GLUT_RGB|GLUT_DEPTH)
     glutInitWindowSize(win_w,win_h); glutInitWindowPosition(60,40)
-    glutCreateWindow(b"FPS Training - AK/AWP, Modes, Recoil, Fixes")
-    try: glutSetCursor(GLUT_CURSOR_NONE)
-    except Exception: pass
+    glutCreateWindow(b"Shooting-Arena by Ohi")
     glutDisplayFunc(display); glutReshapeFunc(reshape); glutIdleFunc(idle)
-    glutKeyboardFunc(keyDown); glutKeyboardUpFunc(keyUp)
-    glutSpecialFunc(special); glutMouseFunc(mouse); glutPassiveMotionFunc(mouseMotion)
-    glutWarpPointer(win_w//2,win_h//2)
+    glutKeyboardFunc(keyboardListener)
+    glutSpecialFunc(specialKeyListener); glutMouseFunc(mouseListener)
     glutMainLoop()
 
 if __name__=="__main__":
