@@ -16,7 +16,7 @@ This project simulates a small practice arena where you can move, shoot, throw g
   - Smoke grenades (line-of-sight blocking with puff particles).  
 - **Enemies**:  
   - AI-controlled with dodging and boundary avoidance.  
-  - Can fire back after player reaches 10 kills.  
+  - Can fire back after the player reaches 10 kills.  
 - **Game HUD**:  
   - Health bar with dynamic color.  
   - Crosshair & scope overlay.  
@@ -41,7 +41,7 @@ End Session: Q          Menu: Esc  (Enter to select)
 
 ---
 
-## 🛠 Requirements
+##  Requirements
 - Python 3.x  
 - [PyOpenGL](https://pypi.org/project/PyOpenGL/)  
 - [PyOpenGL_accelerate](https://pypi.org/project/PyOpenGL-accelerate/) (optional but recommended)  
