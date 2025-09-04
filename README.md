@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/22157240/README.md)
+
 # 🎯 Shooting Arena
 
 A Python + OpenGL training ground FPS-style game built with **PyOpenGL** and **GLUT**.  
