@@ -74,5 +74,5 @@ Fight enemies, practice aim, and survive as long as possible.
 ---
 
 ##  Credits
-Developed by **Ohi & his team**  
+Developed by **Ohi, Tanzimul and Rashed**  
 Built for practice and experimentation with **Python OpenGL**.
