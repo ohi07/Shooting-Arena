@@ -56,7 +56,8 @@ pip install PyOpenGL PyOpenGL_accelerate
 
 ##  How to Run
 ```bash
-python Shooting-Arena.py
+python Sec30_22301280-22301287-22301654_Summer2025.py
+
 ```
 
 A window titled **"Shooting-Arena by Ohi"** will open.  
